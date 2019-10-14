@@ -1,10 +1,25 @@
+/*
+ * @ Author        : RaKiRaKiRa
+ * @ Email         : 763600693@qq.com
+ * @ Create time   : 2019-10-09 20:28
+ * @ Last modified : 2019-10-14 16:25
+ * @ Filename      : 
+ * @ Description   : 
+ */
 package main
 
 import (
 	"fmt"
 	"mapreduce"
 	"os"
+	"unicode"
+	"strings"
+	"strconv"
 )
+
+func split(s rune) bool{
+	return !unicode.IsLetter(s)
+}
 
 //
 // The map function is called once for each file of input. The first
@@ -15,6 +30,19 @@ import (
 //
 func mapF(filename string, contents string) []mapreduce.KeyValue {
 	// Your code here (Part II).
+	counter := make(map[string]int,0)
+	// 分割
+	words := strings.FieldsFunc(contents, split)
+	// 统计
+	for _,w := range words{
+		counter[w]++;
+	}
+	// 汇总
+	res := make([]mapreduce.KeyValue, 0)
+	for word, number := range counter{
+		res = append(res, mapreduce.KeyValue{word, strconv.Itoa(number)})
+	}
+	return res
 }
 
 //
@@ -24,6 +52,14 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 //
 func reduceF(key string, values []string) string {
 	// Your code here (Part II).
+	//res := key + ":"
+	num := 0
+	for _,n := range values{
+		i,_ := strconv.Atoi(n)
+		num += i
+	}
+	//res += strconv.Itoa(num);
+	return strconv.Itoa(num)
 }
 
 // Can be run in 3 ways:
