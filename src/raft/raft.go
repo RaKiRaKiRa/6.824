@@ -20,9 +20,10 @@ package raft
 import "sync"
 import "labrpc"
 
-// import "bytes"
-// import "labgob"
-
+import "bytes"
+import "labgob"
+import "math/rand"
+import "time"
 
 
 //
@@ -45,26 +46,43 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+
+type NodeState int8
+const(
+	Follower   = NodeState(1)
+	Candidate  = NodeState(2)
+	Leader	   = NodeState(3)
+)
+
+const(
+	HeartbeatInterval    = time.Duration(120) * time.Microsecond
+	ElectionTimeoutLower = time.Duration(300) * time.Microsecond // wait time for election is random
+	ElectionTimeoutUpper = time.Duration(500) * time.Microsecond
+)
+
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state 锁保护共享访问这个对等的状态
+	peers     []*labrpc.ClientEnd // RPC end points of all peers						所有的RPC端点
+	persister *Persister          // Object to hold this peer's persisted state			保存这个对等的持续状态de对象
+	me        int                 // this peer's index into peers[]						这个peer的索引
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	// 2A
+	currentTerm     int 				// lastest term that server has seen
+	votedFor        int					// candidate Id that received vote in current term(or null if none) 当期获得投票的候选人ID
+	state 			NodeState			//
 
+	heartbeatTimer *time.Timer
+	electionTimer  *time.Timer
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
 	// Your code here (2A).
-	return term, isleader
+	return rf.currentTerm, rf.state == Leader
 }
 
 
@@ -116,6 +134,9 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	// 2A
+	term 		int
+	candidateId int
 }
 
 //
@@ -124,6 +145,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	term 		int // candidate's term
+	voteGranted int // candidate requesting vote
 }
 
 //
@@ -131,6 +154,7 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	// 2A
 }
 
 //
@@ -162,6 +186,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
+
+/*
+	将RequestVote RPC发送到服务器的示例代码。
+	server是rf.peers []中目标服务器的索引。期望args中的RPC参数。
+	用RPC回复填充*reply，因此调用方应传递＆reply。传递给Call（）的args和reply的类型必须与在处理程序函数中声明的参数的类型（包括它们是否是指针）相同。
+	labrpc软件包模拟了一个有损网络，在该网络中服务器可能无法访问，并且在其中请求和答复可能会丢失。
+	Call（）发送请求并等待答复。如果答复在超时间隔内到达，则Call（）返回true；否则，返回true。否则，Call（）返回false。
+	因此，Call（）可能不会暂时返回。错误的返回可能由服务器故障，无法访问的活动服务器，请求丢失或答复丢失引起。
+	如果服务器端的处理函数未返回，则保证Call（）返回（可能在延迟之后）* except *。因此，无需在Call（）周围实现自己的超时。
+	请查看../labrpc/labrpc.go中的评论以获取更多详细信息。
+	如果您无法使RPC正常工作，请检查是否已大写通过RPC传递的结构中的所有字段名，并且调用方使用＆传递了应答结构的地址，而不是结构本身。
+ */
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
@@ -214,6 +250,15 @@ func (rf *Raft) Kill() {
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
+/*
+	服务或测试人员想要创建Raft服务器。
+	所有Raft服务器（包括该Raft服务器）的端口都位于peers []中。
+	该服务器的端口是peers [me]。
+	所有服务器的peers []数组的顺序相同。
+	持久性是该服务器保存其持久状态的位置，并且最初还保存最近保存的状态（如果有）。
+	applyCh是测试人员或服务期望Raft发送ApplyMsg消息的通道。
+	Make（）必须快速返回，因此对于任何长时间运行的工作，它都应该启动goroutines。
+ */
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -222,10 +267,76 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	// 2A
+	rf.currentTerm = 0
+	rf.votedFor    = -1
+	rf.state       = Follower
+	rf.heartbeatTimer = time.NewTimer(HeartbeatInterval)
+	rf.electionTimer  = time.NewTimer(randElectionTimer())
+
+	// start a goroutine for Timer
+	go func(rf *Raft){
+		select {
+		case<-rf.electionTimer.C: //start election, only for Follower
+			rf.mu.Lock()
+			if rf.state == Follower{
+				rf.setState(Candidate)
+			}else {
+				rf.startElection()
+			}
+			rf.mu.Unlock()
+
+		case<-rf.heartbeatTimer.C: // only useful for leader, send heartbeat
+			rf.mu.Lock()
+			if(rf.state == Leader){
+				rf.broadHeartbeat()
+				rf.heartbeatTimer.Reset(HeartbeatInterval) // if state is not leader, it will stop
+			}
+			rf.mu.Unlock()
+		}
+	}(rf)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 
 	return rf
+}
+
+func randElectionTimer() time.Duration {
+	return time.Duration((rand.Int63n(ElectionTimeoutUpper.Nanoseconds() - ElectionTimeoutLower.Nanoseconds()) + ElectionTimeoutLower.Nanoseconds())) * time.Nanosecond
+}
+
+func (rf *Raft) setState(state NodeState){
+	if state == rf.state{
+		return
+	}
+
+	DPrintf("Term %d: server %d convert from %v to %v\n", rf.currentTerm, rf.me, rf.state, state)
+
+	rf.state = state
+	// init for each state
+	switch rf.state {
+	case Follower:
+		rf.heartbeatTimer.Stop()
+		rf.electionTimer.Reset(HeartbeatInterval)
+		rf.votedFor = -1
+
+	case Candidate:
+		rf.startElection()
+
+	case Leader:
+		rf.electionTimer.Stop()
+		rf.heartbeatTimer.Reset(HeartbeatInterval)
+		rf.broadHeartbeat()
+	}
+}
+
+// TODO
+func (rf *Raft) startElection(){
+
+}
+
+func (rf *Raft) broadHeartbeat(){
+
 }
