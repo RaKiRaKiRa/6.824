@@ -58,9 +58,9 @@ const(
 )
 
 const(
-	HeartbeatInterval    = time.Duration(120) * time.Microsecond
-	ElectionTimeoutLower = time.Duration(300) * time.Microsecond // wait time for election is random
-	ElectionTimeoutUpper = time.Duration(500) * time.Microsecond
+	HeartbeatInterval    = time.Duration(120) * time.Millisecond
+	ElectionTimeoutLower = time.Duration(300) * time.Millisecond // wait time for election is random
+	ElectionTimeoutUpper = time.Duration(500) * time.Millisecond
 )
 
 type Raft struct {
@@ -161,7 +161,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	// do not vote it
-	if rf.currentTerm > args.Term || (rf.votedFor != -1 && rf.currentTerm == args.Term){
+	// fig2 -> RequestVote RPC-> Receiver implementation
+	if rf.currentTerm > args.Term || (rf.votedFor != -1 && rf.currentTerm >= args.Term){
 		DPrintf("%v did not vote for node %d at term %d \n", rf, args.CandidateId, args.Term);
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
